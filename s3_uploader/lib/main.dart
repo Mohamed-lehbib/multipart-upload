@@ -1,122 +1,214 @@
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:http/http.dart' as http;
+import 'package:dio/dio.dart';
+import 'package:path/path.dart' as path;
 
 void main() {
   runApp(const MyApp());
 }
 
+const backendUrl = 'https://multipart-upload.mlehbib.com'; // Change to your backend IP if needed
+
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
-
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Flutter Demo',
-      theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
-      ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+    return const MaterialApp(
+      home: MultiImageUploader(),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
+class MultiImageUploader extends StatefulWidget {
+  const MultiImageUploader({super.key});
 
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  State<MultiImageUploader> createState() => _MultiImageUploaderState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+class _MultiImageUploaderState extends State<MultiImageUploader> {
+  final ImagePicker _picker = ImagePicker();
+  List<File> _selectedImages = [];
+  List<String> _uploadStatuses = [];
+  bool _isUploading = false;
 
-  void _incrementCounter() {
+  Future<void> pickImages() async {
+    final pickedFiles = await _picker.pickMultiImage();
+
+    if (pickedFiles != null && pickedFiles.isNotEmpty) {
+      setState(() {
+        _selectedImages = pickedFiles.map((x) => File(x.path)).toList();
+        _uploadStatuses = List.filled(_selectedImages.length, "Not uploaded");
+      });
+    }
+  }
+
+  Future<void> uploadImage(int index) async {
+    final file = _selectedImages[index];
+    final fileName = path.basename(file.path);
+    final contentType = 'image/jpeg'; // Adjust as needed
+    final fileBytes = await file.readAsBytes();
+    final fileSize = fileBytes.length;
+
     setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
+      _uploadStatuses[index] = "Starting upload...";
+    });
+
+    // Step 1: Initiate multipart upload
+    final initiateRes = await http.post(
+      Uri.parse('$backendUrl/upload/initiate'),
+      body: {
+        'filename': fileName,
+        'content_type': contentType,
+      },
+    );
+    if (initiateRes.statusCode != 200) {
+      setState(() {
+        _uploadStatuses[index] = 'Failed to initiate upload: ${initiateRes.body}';
+      });
+      return;
+    }
+    final initJson = json.decode(initiateRes.body);
+    final uploadId = initJson['uploadId'];
+    final key = initJson['key'];
+
+    const chunkSize = 5 * 1024 * 1024; // 5MB
+    final partCount = (fileSize / chunkSize).ceil();
+    final etags = <Map<String, String>>[];
+
+    // Step 2: Upload each chunk part
+    for (int i = 0; i < partCount; i++) {
+      final start = i * chunkSize;
+      final end = ((i + 1) * chunkSize < fileSize)
+          ? (i + 1) * chunkSize
+          : fileSize;
+      final chunk = fileBytes.sublist(start, end);
+
+      // Get presigned URL for this part
+      final presignRes = await http.post(
+        Uri.parse('$backendUrl/upload/presigned-url'),
+        body: {
+          'key': key,
+          'uploadId': uploadId,
+          'partNumber': (i + 1).toString(),
+        },
+      );
+
+      if (presignRes.statusCode != 200) {
+        setState(() {
+          _uploadStatuses[index] = 'Failed to get presigned URL: ${presignRes.body}';
+        });
+        return;
+      }
+
+      final presignJson = json.decode(presignRes.body);
+      final url = presignJson['url'];
+
+      // Upload chunk to S3 using Dio
+      final dio = Dio();
+      try {
+        final uploadRes = await dio.put(
+          url,
+          data: Stream.fromIterable([chunk]),
+          options: Options(
+            headers: {
+              'Content-Length': chunk.length.toString(),
+              'Content-Type': contentType,
+            },
+          ),
+        );
+
+        final etag = uploadRes.headers.map['etag']?.first;
+        if (etag == null) {
+          setState(() {
+            _uploadStatuses[index] = 'Failed: No ETag returned by S3';
+          });
+          return;
+        }
+
+        etags.add({'PartNumber': '${i + 1}', 'ETag': etag});
+        setState(() {
+          _uploadStatuses[index] = 'Uploaded part ${i + 1} of $partCount';
+        });
+      } catch (e) {
+        setState(() {
+          _uploadStatuses[index] = 'Upload failed: $e';
+        });
+        return;
+      }
+    }
+
+    // Step 3: Complete multipart upload
+    final completeParts = etags.map((e) => "${e['PartNumber']}:${e['ETag']}").toList();
+    final completeRes = await http.post(
+      Uri.parse('$backendUrl/upload/complete'),
+      body: {
+        'key': key,
+        'uploadId': uploadId,
+        'parts': completeParts,
+      },
+    );
+
+    if (completeRes.statusCode == 200) {
+      setState(() {
+        _uploadStatuses[index] = 'Upload complete!';
+      });
+    } else {
+      setState(() {
+        _uploadStatuses[index] = 'Failed to complete upload: ${completeRes.body}';
+      });
+    }
+  }
+
+  Future<void> uploadAll() async {
+    if (_selectedImages.isEmpty) return;
+
+    setState(() {
+      _isUploading = true;
+    });
+
+    for (int i = 0; i < _selectedImages.length; i++) {
+      await uploadImage(i);
+    }
+
+    setState(() {
+      _isUploading = false;
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
     return Scaffold(
-      appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
-      ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+      appBar: AppBar(title: const Text("Multi Image Multipart Upload")),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(children: [
+          ElevatedButton(
+            onPressed: _isUploading ? null : pickImages,
+            child: const Text("Pick Images"),
+          ),
+          const SizedBox(height: 10),
+          Expanded(
+            child: ListView.builder(
+              itemCount: _selectedImages.length,
+              itemBuilder: (context, index) {
+                return ListTile(
+                  leading: Image.file(_selectedImages[index], width: 50, height: 50, fit: BoxFit.cover),
+                  title: Text(path.basename(_selectedImages[index].path)),
+                  subtitle: Text(_uploadStatuses.length > index ? _uploadStatuses[index] : ""),
+                );
+              },
             ),
-          ],
-        ),
+          ),
+          ElevatedButton(
+            onPressed: (_isUploading || _selectedImages.isEmpty) ? null : uploadAll,
+            child: Text(_isUploading ? 'Uploading...' : 'Upload All Images'),
+          ),
+        ]),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
     );
   }
 }
