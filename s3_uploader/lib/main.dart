@@ -5,20 +5,21 @@ import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
 import 'package:dio/dio.dart';
 import 'package:path/path.dart' as path;
+import 'package:mime/mime.dart';
 
 void main() {
   runApp(const MyApp());
 }
 
-const backendUrl = 'https://multipart-upload.mlehbib.com'; // Change to your backend IP if needed
+const backendUrl = 'http://192.168.100.24:8000'; // Update if needed
+// const backendUrl = 'https://multipart-upload.mlehbib.com'; // Change to your backend IP if needed
+
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
   @override
   Widget build(BuildContext context) {
-    return const MaterialApp(
-      home: MultiImageUploader(),
-    );
+    return const MaterialApp(home: MultiImageUploader());
   }
 }
 
@@ -37,7 +38,6 @@ class _MultiImageUploaderState extends State<MultiImageUploader> {
 
   Future<void> pickImages() async {
     final pickedFiles = await _picker.pickMultiImage();
-
     if (pickedFiles != null && pickedFiles.isNotEmpty) {
       setState(() {
         _selectedImages = pickedFiles.map((x) => File(x.path)).toList();
@@ -49,7 +49,7 @@ class _MultiImageUploaderState extends State<MultiImageUploader> {
   Future<void> uploadImage(int index) async {
     final file = _selectedImages[index];
     final fileName = path.basename(file.path);
-    final contentType = 'image/jpeg'; // Adjust as needed
+    final contentType = lookupMimeType(file.path) ?? 'application/octet-stream';
     final fileBytes = await file.readAsBytes();
     final fileSize = fileBytes.length;
 
@@ -60,17 +60,17 @@ class _MultiImageUploaderState extends State<MultiImageUploader> {
     // Step 1: Initiate multipart upload
     final initiateRes = await http.post(
       Uri.parse('$backendUrl/upload/initiate'),
-      body: {
-        'filename': fileName,
-        'content_type': contentType,
-      },
+      body: {'filename': fileName, 'content_type': contentType},
     );
+
     if (initiateRes.statusCode != 200) {
       setState(() {
-        _uploadStatuses[index] = 'Failed to initiate upload: ${initiateRes.body}';
+        _uploadStatuses[index] =
+            'Failed to initiate upload: ${initiateRes.body}';
       });
       return;
     }
+
     final initJson = json.decode(initiateRes.body);
     final uploadId = initJson['uploadId'];
     final key = initJson['key'];
@@ -79,7 +79,7 @@ class _MultiImageUploaderState extends State<MultiImageUploader> {
     final partCount = (fileSize / chunkSize).ceil();
     final etags = <Map<String, String>>[];
 
-    // Step 2: Upload each chunk part
+    // Step 2: Upload each part
     for (int i = 0; i < partCount; i++) {
       final start = i * chunkSize;
       final end = ((i + 1) * chunkSize < fileSize)
@@ -87,7 +87,6 @@ class _MultiImageUploaderState extends State<MultiImageUploader> {
           : fileSize;
       final chunk = fileBytes.sublist(start, end);
 
-      // Get presigned URL for this part
       final presignRes = await http.post(
         Uri.parse('$backendUrl/upload/presigned-url'),
         body: {
@@ -99,7 +98,8 @@ class _MultiImageUploaderState extends State<MultiImageUploader> {
 
       if (presignRes.statusCode != 200) {
         setState(() {
-          _uploadStatuses[index] = 'Failed to get presigned URL: ${presignRes.body}';
+          _uploadStatuses[index] =
+              'Failed to get presigned URL: ${presignRes.body}';
         });
         return;
       }
@@ -107,7 +107,6 @@ class _MultiImageUploaderState extends State<MultiImageUploader> {
       final presignJson = json.decode(presignRes.body);
       final url = presignJson['url'];
 
-      // Upload chunk to S3 using Dio
       final dio = Dio();
       try {
         final uploadRes = await dio.put(
@@ -116,7 +115,8 @@ class _MultiImageUploaderState extends State<MultiImageUploader> {
           options: Options(
             headers: {
               'Content-Length': chunk.length.toString(),
-              'Content-Type': contentType,
+              // 'Content-Type': contentType,
+              'Content-Type': "multipart/form-data",
             },
           ),
         );
@@ -124,7 +124,7 @@ class _MultiImageUploaderState extends State<MultiImageUploader> {
         final etag = uploadRes.headers.map['etag']?.first;
         if (etag == null) {
           setState(() {
-            _uploadStatuses[index] = 'Failed: No ETag returned by S3';
+            _uploadStatuses[index] = 'Failed: No ETag returned';
           });
           return;
         }
@@ -141,15 +141,14 @@ class _MultiImageUploaderState extends State<MultiImageUploader> {
       }
     }
 
-    // Step 3: Complete multipart upload
-    final completeParts = etags.map((e) => "${e['PartNumber']}:${e['ETag']}").toList();
+    // Step 3: Complete upload
+    final completeParts = etags
+        .map((e) => "${e['PartNumber']}:${e['ETag']}")
+        .toList();
+
     final completeRes = await http.post(
       Uri.parse('$backendUrl/upload/complete'),
-      body: {
-        'key': key,
-        'uploadId': uploadId,
-        'parts': completeParts,
-      },
+      body: {'key': key, 'uploadId': uploadId, 'parts': completeParts},
     );
 
     if (completeRes.statusCode == 200) {
@@ -158,7 +157,8 @@ class _MultiImageUploaderState extends State<MultiImageUploader> {
       });
     } else {
       setState(() {
-        _uploadStatuses[index] = 'Failed to complete upload: ${completeRes.body}';
+        _uploadStatuses[index] =
+            'Failed to complete upload: ${completeRes.body}';
       });
     }
   }
@@ -185,29 +185,42 @@ class _MultiImageUploaderState extends State<MultiImageUploader> {
       appBar: AppBar(title: const Text("Multi Image Multipart Upload")),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
-        child: Column(children: [
-          ElevatedButton(
-            onPressed: _isUploading ? null : pickImages,
-            child: const Text("Pick Images"),
-          ),
-          const SizedBox(height: 10),
-          Expanded(
-            child: ListView.builder(
-              itemCount: _selectedImages.length,
-              itemBuilder: (context, index) {
-                return ListTile(
-                  leading: Image.file(_selectedImages[index], width: 50, height: 50, fit: BoxFit.cover),
-                  title: Text(path.basename(_selectedImages[index].path)),
-                  subtitle: Text(_uploadStatuses.length > index ? _uploadStatuses[index] : ""),
-                );
-              },
+        child: Column(
+          children: [
+            ElevatedButton(
+              onPressed: _isUploading ? null : pickImages,
+              child: const Text("Pick Images"),
             ),
-          ),
-          ElevatedButton(
-            onPressed: (_isUploading || _selectedImages.isEmpty) ? null : uploadAll,
-            child: Text(_isUploading ? 'Uploading...' : 'Upload All Images'),
-          ),
-        ]),
+            const SizedBox(height: 10),
+            Expanded(
+              child: ListView.builder(
+                itemCount: _selectedImages.length,
+                itemBuilder: (context, index) {
+                  return ListTile(
+                    leading: Image.file(
+                      _selectedImages[index],
+                      width: 50,
+                      height: 50,
+                      fit: BoxFit.cover,
+                    ),
+                    title: Text(path.basename(_selectedImages[index].path)),
+                    subtitle: Text(
+                      _uploadStatuses.length > index
+                          ? _uploadStatuses[index]
+                          : "",
+                    ),
+                  );
+                },
+              ),
+            ),
+            ElevatedButton(
+              onPressed: (_isUploading || _selectedImages.isEmpty)
+                  ? null
+                  : uploadAll,
+              child: Text(_isUploading ? 'Uploading...' : 'Upload All Images'),
+            ),
+          ],
+        ),
       ),
     );
   }
