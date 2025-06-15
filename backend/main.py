@@ -30,8 +30,6 @@ s3_client = boto3.client("s3", region_name=REGION,
 
 @app.post("/upload/initiate")
 async def initiate_upload(filename: str = Form(...), content_type: str = Form(...)):
-    print("Bucket name:", BUCKET_NAME)
-    print("AWS Access, Secret Key, and Region:", AWS_ACCESS_KEY, AWS_SECRET_KEY, REGION)
     key = f"uploads/{uuid4()}_{filename}"
     response = s3_client.create_multipart_upload(Bucket=BUCKET_NAME, Key=key, ContentType=content_type)
     return {"uploadId": response["UploadId"], "key": key}
