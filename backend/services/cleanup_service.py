@@ -22,12 +22,14 @@ class CleanupService:
         self.bucket_name = os.getenv("BUCKET_NAME")
         
         self.redis_client = redis.Redis(
-            host=os.getenv("REDIS_HOST", "redis"),
-            port=int(os.getenv("REDIS_PORT", 6370)),
-            password=os.getenv("REDIS_PASSWORD"),
+            host="redis",
+            port=6370,
+            password="REDIS_PASSWORD",
             decode_responses=True,
             db=0
         )
+        
+        
 
     async def start_cleanup_scheduler(self):
         """Start the cleanup scheduler"""
