@@ -1,5 +1,6 @@
+from http.client import HTTPException
 from typing import List
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, Body
 import boto3
 from uuid import uuid4
 from fastapi.middleware.cors import CORSMiddleware
@@ -54,18 +55,20 @@ async def get_presigned_url(key: str = Form(...), uploadId: str = Form(...), par
 
 @app.post("/upload/complete")
 async def complete_upload(
-    key: str = Form(...),
-    uploadId: str = Form(...),
-    parts: List[str] = Form(...)
+    key: str = Body(...),
+    uploadId: str = Body(...),
+    parts: List[dict] = Body(...)
 ):
-    completed_parts = [
-        {"ETag": etag, "PartNumber": int(part_number)}
-        for part_number, etag in (part.split(":") for part in parts)
-    ]
-    response = s3_client.complete_multipart_upload(
-        Bucket=BUCKET_NAME,
-        Key=key,
-        UploadId=uploadId,
-        MultipartUpload={"Parts": completed_parts}
-    )
-    return {"location": response["Location"]}
+    try:
+        # Ensure parts are sorted by PartNumber
+        sorted_parts = sorted(parts, key=lambda x: x['PartNumber'])
+        
+        response = s3_client.complete_multipart_upload(
+            Bucket=BUCKET_NAME,
+            Key=key,
+            UploadId=uploadId,
+            MultipartUpload={"Parts": sorted_parts}
+        )
+        return {"location": response["Location"]}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
