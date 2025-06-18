@@ -24,7 +24,7 @@ BUCKET_NAME = os.getenv("BUCKET_NAME")
 REGION = os.getenv("AWS_REGION")
 
 
-s3_client = boto3.client("s3", region_name=REGION,
+s3_client = boto3.client("s3", region_name="eu-west-3",
                          aws_access_key_id=AWS_ACCESS_KEY,
                          aws_secret_access_key=AWS_SECRET_KEY,
     config=boto3.session.Config(signature_version='s3v4'))
