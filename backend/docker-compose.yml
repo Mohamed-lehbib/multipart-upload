@@ -5,15 +5,18 @@ services:
     image: redis:7-alpine
     container_name: multipart_redis
     ports:
-      - "6380:6379"
+      - "6380:6379"  # External:Internal port mapping
     volumes:
       - redis_data:/data
-    command: redis-server --port 6379  # Explicit internal port
+    command: redis-server --appendonly yes
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 3
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - upload_network
 
   fastapi:
     build:
@@ -22,14 +25,37 @@ services:
     container_name: multipart_uploader
     ports:
       - "49567:8000"
+    environment:
+      # Redis connection should use service name and internal port
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      # AWS Configuration
+      - AWS_ACCESS_KEY=${AWS_ACCESS_KEY}
+      - AWS_SECRET_KEY=${AWS_SECRET_KEY}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - BUCKET_NAME=${BUCKET_NAME}
     env_file:
       - .env
     depends_on:
       redis:
         condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - upload_network
+    # Uncomment for development
     # volumes:
     #   - .:/app
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+networks:
+  upload_network:
+    driver: bridge
 
 volumes:
   redis_data:
