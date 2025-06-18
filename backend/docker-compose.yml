@@ -5,9 +5,10 @@ services:
     image: redis:7-alpine
     container_name: multipart_redis
     ports:
-      - "6370:6370"
+      - "6380:6379"
     volumes:
       - redis_data:/data
+    command: redis-server --port 6379  # Explicit internal port
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

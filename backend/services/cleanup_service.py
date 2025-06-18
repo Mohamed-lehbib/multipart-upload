@@ -23,7 +23,7 @@ class CleanupService:
         
         self.redis_client = redis.Redis(
             host="redis",
-            port=6370,
+            port=6379,
             password="REDIS_PASSWORD",
             decode_responses=True,
             db=0
