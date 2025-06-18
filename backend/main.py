@@ -26,12 +26,14 @@ REGION = os.getenv("AWS_REGION")
 
 s3_client = boto3.client("s3", region_name=REGION,
                          aws_access_key_id=AWS_ACCESS_KEY,
-                         aws_secret_access_key=AWS_SECRET_KEY)
+                         aws_secret_access_key=AWS_SECRET_KEY,
+    config=boto3.session.Config(signature_version='s3v4'))
 
 @app.post("/upload/initiate")
 async def initiate_upload(filename: str = Form(...), content_type: str = Form(...)):
     key = f"uploads/{uuid4()}_{filename}"
-    response = s3_client.create_multipart_upload(Bucket=BUCKET_NAME, Key=key)
+    response = s3_client.create_multipart_upload(Bucket=BUCKET_NAME, Key=key,
+        ContentType=content_type )
     return {"uploadId": response["UploadId"], "key": key}
 
 @app.post("/upload/presigned-url")
