@@ -1,3 +1,4 @@
+from typing import List
 from fastapi import FastAPI, UploadFile, File, Form
 import boto3
 from uuid import uuid4
@@ -52,9 +53,15 @@ async def get_presigned_url(key: str = Form(...), uploadId: str = Form(...), par
     return {"url": url}
 
 @app.post("/upload/complete")
-async def complete_upload(key: str = Form(...), uploadId: str = Form(...), parts: list = Form(...)):
-    completed_parts = [{"ETag": etag, "PartNumber": int(part_number)}
-                       for part_number, etag in (part.split(":") for part in parts)]
+async def complete_upload(
+    key: str = Form(...),
+    uploadId: str = Form(...),
+    parts: List[str] = Form(...)
+):
+    completed_parts = [
+        {"ETag": etag, "PartNumber": int(part_number)}
+        for part_number, etag in (part.split(":") for part in parts)
+    ]
     response = s3_client.complete_multipart_upload(
         Bucket=BUCKET_NAME,
         Key=key,
