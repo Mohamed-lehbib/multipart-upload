@@ -24,7 +24,7 @@ class UploadService:
         # Redis Configuration
         self.redis_client = redis.Redis(
             host=os.getenv("REDIS_HOST", "localhost"),
-            port=int(os.getenv("REDIS_PORT", 6379)),
+            port=int(os.getenv("REDIS_PORT", 6370)),
             password=os.getenv("REDIS_PASSWORD"),
             decode_responses=True,
             db=0
