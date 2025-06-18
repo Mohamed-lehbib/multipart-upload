@@ -1,6 +1,19 @@
 version: "3.8"
 
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: multipart_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
   fastapi:
     build:
       context: .
@@ -10,6 +23,28 @@ services:
       - "49567:8000"
     env_file:
       - .env
+    depends_on:
+      redis:
+        condition: service_healthy
     # volumes:
     #   - .:/app
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+volumes:
+  redis_data:
+
+# version: "3.8"
+
+# services:
+#   fastapi:
+#     build:
+#       context: .
+#       dockerfile: Dockerfile
+#     container_name: multipart_uploader
+#     ports:
+#       - "49567:8000"
+#     env_file:
+#       - .env
+#     # volumes:
+#     #   - .:/app
+#     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
