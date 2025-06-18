@@ -26,10 +26,6 @@ class CleanupService:
             port=int(os.getenv("REDIS_PORT", 6379)),
             password=os.getenv("REDIS_PASSWORD"),
             decode_responses=True,
-            socket_connect_timeout=5,
-            socket_keepalive=True,
-            retry_on_timeout=True,
-            health_check_interval=30,
             db=0
         )
 
