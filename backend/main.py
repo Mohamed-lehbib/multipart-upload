@@ -138,7 +138,7 @@ async def complete_upload(
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/upload/abort")
-async def abort_upload(session_id: str = Body(...)):
+async def abort_upload(session_id: str = Body(...,embed=True)):
     """Abort an ongoing upload"""
     try:
         await upload_service.abort_upload(session_id)
@@ -167,7 +167,7 @@ async def get_active_sessions():
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/upload/resume")
-async def resume_upload(session_id: str = Body(...)):
+async def resume_upload(session_id: str = Body(...,embed=True)):
     """Resume a paused upload"""
     try:
         session = await upload_service.resume_upload(session_id)
@@ -179,7 +179,7 @@ async def resume_upload(session_id: str = Body(...)):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/upload/pause")
-async def pause_upload(session_id: str = Body(...)):
+async def pause_upload(session_id: str = Body(...,embed=True)):
     """Pause an ongoing upload"""
     try:
         await upload_service.pause_upload(session_id)
