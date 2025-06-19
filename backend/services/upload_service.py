@@ -13,7 +13,7 @@ class UploadService:
         # AWS S3 Configuration
         self.s3_client = boto3.client(
             "s3",
-            region_name="us-east-1",
+            region_name="eu-west-3",
             aws_access_key_id=os.getenv("AWS_ACCESS_KEY"),
             aws_secret_access_key=os.getenv("AWS_SECRET_KEY"),
             config=boto3.session.Config(signature_version='s3v4')
