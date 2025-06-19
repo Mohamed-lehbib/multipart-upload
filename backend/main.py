@@ -74,6 +74,7 @@ async def initiate_upload(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
 @app.post("/upload/presigned-url")
 async def get_presigned_url(
     session_id: str = Form(...),
@@ -90,7 +91,9 @@ async def get_presigned_url(
         
         if not session_data:
             raise HTTPException(status_code=404, detail="Session not found in Redis")
-        url = await upload_service.generate_presigned_url(session_id, part_number)
+        
+        # Pass the session object instead of session_id
+        url = upload_service.generate_presigned_url(session_data, part_number)
         return {"url": url}
     except Exception as e:
         print(f"!!! Presigned URL Error: {str(e)}")

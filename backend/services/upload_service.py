@@ -71,7 +71,7 @@ class UploadService:
         
         return session
 
-    def generate_presigned_url(self, session_id: str, part_number: int) -> str:
+    def generate_presigned_url(self, session: UploadSession, part_number: int) -> str:
         print(f"\n=== Generating S3 Presigned URL ===")
         print(f"Bucket: {self.bucket_name}")
         print(f"Key: {session.s3_key}")
@@ -208,20 +208,26 @@ class UploadService:
         
         return sessions
 
+
     async def _store_session(self, session: UploadSession):
-        """Store session in Redis"""
-        try: 
-            session_data = session.model_dump_json() 
-            # Convert datetime objects to ISO format strings
-            for key, value in session_data.items():
-                if isinstance(value, datetime):
-                    session_data[key] = value.isoformat()
-            
-            self.redis_client.setex(
-                f"upload_session:{session.id}",
-                int(self.session_ttl.total_seconds()),
-                session_data
-                 )
-        except Exception as e:
-            print(f"Failed to store session: {str(e)}")
-            raise    
+            """Store session in Redis"""
+            try: 
+                # Get dictionary representation instead of JSON string
+                session_data = session.model_dump()
+                
+                # Convert datetime objects to ISO format strings
+                for key, value in session_data.items():
+                    if isinstance(value, datetime):
+                        session_data[key] = value.isoformat()
+                
+                # Convert to JSON string for storage
+                session_json = json.dumps(session_data)
+                
+                self.redis_client.setex(
+                    f"upload_session:{session.id}",
+                    int(self.session_ttl.total_seconds()),
+                    session_json
+                )
+            except Exception as e:
+                print(f"Failed to store session: {str(e)}")
+                raise 
