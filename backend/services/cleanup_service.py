@@ -25,7 +25,9 @@ class CleanupService:
             host="redis",
             port=6379,
             password=os.getenv("REDIS_PASSWORD", ""), 
-            decode_responses=True,
+            decode_responses=False,  # Keep as False for binary data safety
+            socket_connect_timeout=5,  # Add timeout
+            health_check_interval=30 , # Enable health checks
             db=0
         )
         

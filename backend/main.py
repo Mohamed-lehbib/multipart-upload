@@ -62,6 +62,9 @@ async def initiate_upload(
         )
         
         session = await upload_service.create_session(session_data)
+        test_session = await upload_service.get_session(session.id)
+        print(f"Session stored in Redis: {bool(test_session)}")  # Should be True
+
         return {
             "session_id": session.id,
             "uploadId": session.upload_id,

@@ -26,8 +26,10 @@ class UploadService:
             host="redis",
             port=6379,
             password=os.getenv("REDIS_PASSWORD", ""), 
-            decode_responses=True,
-            db=0
+            decode_responses=False,  # Keep as False for binary data safety
+            socket_connect_timeout=5,  # Add timeout
+            health_check_interval=30,  # Enable health checks
+                    db=0
         )
         
         # Session expiration (7 days)
@@ -208,7 +210,7 @@ class UploadService:
 
     async def _store_session(self, session: UploadSession):
         """Store session in Redis"""
-        session_data = session.dict()
+        session_data = session.json()
         # Convert datetime objects to ISO format strings
         for key, value in session_data.items():
             if isinstance(value, datetime):
@@ -217,5 +219,5 @@ class UploadService:
         self.redis_client.setex(
             f"upload_session:{session.id}",
             int(self.session_ttl.total_seconds()),
-            json.dumps(session_data)
+            session_data
         )
