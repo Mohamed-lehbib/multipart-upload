@@ -54,6 +54,8 @@ async def initiate_upload(
 ):
     """Initialize a new multipart upload session"""
     try:
+        file_size = int(file_size)
+        chunk_size = int(chunk_size)
         session_data = UploadSessionCreate(
             filename=filename,
             file_size=file_size,
@@ -62,9 +64,6 @@ async def initiate_upload(
         )
         
         session = await upload_service.create_session(session_data)
-        test_session = await upload_service.get_session(session.id)
-        print(f"Session stored in Redis: {bool(test_session)}")  # Should be True
-
         return {
             "session_id": session.id,
             "uploadId": session.upload_id,

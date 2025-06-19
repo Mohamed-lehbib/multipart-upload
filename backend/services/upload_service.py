@@ -210,14 +210,18 @@ class UploadService:
 
     async def _store_session(self, session: UploadSession):
         """Store session in Redis"""
-        session_data = session.json()
-        # Convert datetime objects to ISO format strings
-        for key, value in session_data.items():
-            if isinstance(value, datetime):
-                session_data[key] = value.isoformat()
-        
-        self.redis_client.setex(
-            f"upload_session:{session.id}",
-            int(self.session_ttl.total_seconds()),
-            session_data
-        )
+        try: 
+            session_data = session.model_dump_json() 
+            # Convert datetime objects to ISO format strings
+            for key, value in session_data.items():
+                if isinstance(value, datetime):
+                    session_data[key] = value.isoformat()
+            
+            self.redis_client.setex(
+                f"upload_session:{session.id}",
+                int(self.session_ttl.total_seconds()),
+                session_data
+                 )
+        except Exception as e:
+            print(f"Failed to store session: {str(e)}")
+            raise    
