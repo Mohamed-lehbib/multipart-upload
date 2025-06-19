@@ -5,7 +5,7 @@ services:
     image: redis:7-alpine
     container_name: multipart_redis
     ports:
-      - "6380:6379"  # External:Internal port mapping
+      - "6389:6379"  # External:Internal port mapping
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes
