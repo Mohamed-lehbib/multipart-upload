@@ -79,9 +79,19 @@ async def get_presigned_url(
 ):
     """Generate presigned URL for uploading a specific part"""
     try:
+        print(f"\n=== Presigned URL Request ===")
+        print(f"Session ID: {session_id}")
+        print(f"Part Number: {part_number}")
+        
+        session_data = await upload_service.get_session(session_id)
+        print(f"Session from Redis: {session_data}")
+        
+        if not session_data:
+            raise HTTPException(status_code=404, detail="Session not found in Redis")
         url = await upload_service.generate_presigned_url(session_id, part_number)
         return {"url": url}
     except Exception as e:
+        print(f"!!! Presigned URL Error: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/upload/part-complete")

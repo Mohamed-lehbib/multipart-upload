@@ -69,33 +69,30 @@ class UploadService:
         
         return session
 
-    async def generate_presigned_url(self, session_id: str, part_number: int) -> str:
-        """Generate presigned URL for part upload"""
-        session = await self.get_session(session_id)
-        if not session:
-            raise ValueError("Session not found")
+    def generate_presigned_url(self, session_id: str, part_number: int) -> str:
+        print(f"\n=== Generating S3 Presigned URL ===")
+        print(f"Bucket: {self.bucket_name}")
+        print(f"Key: {session.s3_key}")
+        print(f"UploadId: {session.upload_id}")
+        print(f"PartNumber: {part_number}")
         
-        if session.status in [UploadStatus.COMPLETED, UploadStatus.CANCELLED]:
-            raise ValueError("Cannot upload to completed or cancelled session")
-        
-        # Update session status to uploading
-        session.status = UploadStatus.UPLOADING
-        await self._store_session(session)
-        
-        # Generate presigned URL
-        url = self.s3_client.generate_presigned_url(
-            "upload_part",
-            Params={
-                "Bucket": self.bucket_name,
-                "Key": session.s3_key,
-                "UploadId": session.upload_id,
-                "PartNumber": part_number
-            },
-            ExpiresIn=3600,  # 1 hour
-            HttpMethod="PUT"
-        )
-        
-        return url
+        try:
+            url = self.s3_client.generate_presigned_url(
+                "upload_part",
+                Params={
+                    "Bucket": self.bucket_name,
+                    "Key": session.s3_key,
+                    "UploadId": session.upload_id,
+                    "PartNumber": part_number
+                },
+                ExpiresIn=3600,
+                HttpMethod="PUT"
+            )
+            print(f"Generated URL: {url}")
+            return url
+        except Exception as e:
+            print(f"S3 Presigned URL Error: {str(e)}")
+            raise
 
     async def mark_part_complete(self, session_id: str, part: PartUpload):
         """Mark a part as successfully uploaded"""
