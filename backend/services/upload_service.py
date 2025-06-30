@@ -169,50 +169,19 @@ class UploadService:
         session.status = UploadStatus.PAUSED
         await self._store_session(session)
 
-async def resume_upload(self, session_id: str, parts: Optional[List[dict]] = None) -> dict:
-    """Resume a paused or failed upload session with validation"""
-    session = await self.get_session(session_id)
-    if not session:
-        raise ValueError("Session not found")
-    
-    # Validate session state
-    if session.status not in [UploadStatus.PAUSED, UploadStatus.FAILED]:
-        raise ValueError(f"Cannot resume session in {session.status} state")
-    
-    # Verify S3 upload still exists
-    try:
-        uploads = self.s3_client.list_multipart_uploads(Bucket=self.bucket_name)
-        active_upload = next(
-            (u for u in uploads.get('Uploads', []) 
-            if u['UploadId'] == session.upload_id),
-            None
-        )
+    async def resume_upload(self, session_id: str) -> UploadSession:
+        """Resume a paused upload session"""
+        session = await self.get_session(session_id)
+        if not session:
+            raise ValueError("Session not found")
         
-        if not active_upload:
-            raise ValueError("Original upload no longer exists on S3")
-    except Exception as e:
-        raise ValueError(f"Failed to verify S3 upload: {str(e)}")
-    
-    # Generate new presigned URLs for remaining parts if needed
-    presigned_urls = {}
-    if parts:
-        total_parts = (session.file_size / session.chunk_size).ceil()
-        uploaded_parts = {p['PartNumber'] for p in session.uploaded_parts}
+        if session.status != UploadStatus.PAUSED:
+            raise ValueError("Session is not paused")
         
-        for part_num in range(1, total_parts + 1):
-            if part_num not in uploaded_parts:
-                presigned_urls[part_num] = self.generate_presigned_url(
-                    session, part_num
-                )
-    
-    # Update session state
-    session.status = UploadStatus.UPLOADING
-    await self._store_session(session)
-    
-    return {
-        "session": session,
-        "presigned_urls": presigned_urls
-    }
+        session.status = UploadStatus.UPLOADING
+        await self._store_session(session)
+        
+        return session
 
     async def get_session(self, session_id: str) -> Optional[UploadSession]:
         """Get session by ID"""

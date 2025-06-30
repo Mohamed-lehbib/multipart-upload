@@ -167,42 +167,17 @@ async def get_active_sessions():
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/upload/resume")
-async def resume_upload(
-    session_id: str = Body(..., embed=True),
-    parts: Optional[List[dict]] = Body(None)
-):
-    """Resume a paused or failed upload"""
+async def resume_upload(session_id: str = Body(...,embed=True)):
+    """Resume a paused upload"""
     try:
-        # First verify the session exists and is resumable
-        session = await upload_service.get_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-        
-        if session.status not in [UploadStatus.PAUSED, UploadStatus.FAILED]:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Cannot resume session in {session.status} state"
-            )
-        
-        # If parts are provided, validate them
-        if parts:
-            for part in parts:
-                if not all(k in part for k in ['PartNumber', 'ETag']):
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Invalid part data"
-                    )
-        
-        # Resume the upload
-        result = await upload_service.resume_upload(session_id, parts)
+        session = await upload_service.resume_upload(session_id)
         return {
             "status": "resumed",
-            "session": result["session"],
-            "presigned_urls": result.get("presigned_urls")
+            "session": session
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
-    
+
 @app.post("/upload/pause")
 async def pause_upload(session_id: str = Body(...,embed=True)):
     """Pause an ongoing upload"""
