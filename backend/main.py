@@ -41,14 +41,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-class ResumeRequest(BaseModel):
-    session_id: str
 
-class PauseRequest(BaseModel):
-    session_id: str
-
-class CancelRequest(BaseModel):
-    session_id: str
 # Initialize services
 upload_service = UploadService()
 
@@ -144,50 +137,15 @@ async def complete_upload(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-# @app.post("/upload/abort")
-# async def abort_upload(session_id: str = Body(...,embed=True)):
-#     """Abort an ongoing upload"""
-#     try:
-#         await upload_service.abort_upload(session_id)
-#         return {"status": "aborted"}
-#     except Exception as e:
-#         raise HTTPException(status_code=400, detail=str(e))
 @app.post("/upload/abort")
-async def abort_upload(request: CancelRequest):
-    """Cancel/abort an upload"""
+async def abort_upload(session_id: str = Body(...,embed=True)):
+    """Abort an ongoing upload"""
     try:
-        session_id = request.session_id
-        print(f"Attempting to abort session: {session_id}")
-        
-        session = await upload_service.get_session(session_id)
-        if not session:
-            # If session doesn't exist, consider it already cancelled
-            return {"status": "cancelled", "message": "Session not found"}
-        
-        # Cancel the multipart upload on S3 if it exists
-        if hasattr(session, 'upload_id') and session.upload_id:
-            try:
-                # Add S3 abort logic here if needed
-                print(f"Aborting S3 multipart upload: {session.upload_id}")
-            except Exception as s3_error:
-                print(f"Error aborting S3 upload: {s3_error}")
-                # Continue even if S3 abort fails
-        
-        # Update session status
-        session.status = UploadStatus.CANCELLED
-        await upload_service._store_session(session)
-        
-        return {
-            "status": "cancelled",
-            "session": session.dict()
-        }
-        
-    except HTTPException:
-        raise
+        await upload_service.abort_upload(session_id)
+        return {"status": "aborted"}
     except Exception as e:
-        print(f"Error aborting upload: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-    
+        raise HTTPException(status_code=400, detail=str(e))
+
 @app.get("/upload/session/{session_id}")
 async def get_session(session_id: str):
     """Get upload session details"""
@@ -208,95 +166,99 @@ async def get_active_sessions():
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-
 @app.post("/upload/resume")
-async def resume_upload(request: ResumeRequest):
-    """Resume a paused upload with enhanced error handling"""
+async def resume_upload(session_id: str = Body(...,embed=True)):
+    """Resume a paused upload"""
     try:
-        session_id = request.session_id
-        print(f"Attempting to resume session: {session_id}")
-        
-        # Get session with detailed error info
-        session = await upload_service.get_session(session_id)
-        if not session:
-            print(f"Session not found in Redis: {session_id}")
-            raise HTTPException(
-                status_code=404, 
-                detail=f"Session {session_id} not found or expired"
-            )
-        
-        print(f"Session found with status: {session.status}")
-        
-        # More flexible resume conditions
-        if session.status not in [UploadStatus.PAUSED, UploadStatus.FAILED]:
-            if session.status == UploadStatus.COMPLETED:
-                return {
-                    "status": "already_completed",
-                    "session": session.dict()
-                }
-            elif session.status == UploadStatus.UPLOADING:
-                return {
-                    "status": "already_uploading", 
-                    "session": session.dict()
-                }
-            else:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Cannot resume session with status: {session.status}"
-                )
-        
-        # Resume the upload
         session = await upload_service.resume_upload(session_id)
         return {
             "status": "resumed",
-            "session": session.dict()
+            "session": session
         }
-        
-    except HTTPException:
-        raise
     except Exception as e:
-        print(f"Unexpected error resuming upload: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-
-
-# @app.post("/upload/pause")
-# async def pause_upload(session_id: str = Body(...,embed=True)):
-#     """Pause an ongoing upload"""
-#     try:
-#         await upload_service.pause_upload(session_id)
-#         return {"status": "paused"}
-#     except Exception as e:
-#         raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/upload/pause")
-async def pause_upload(request: PauseRequest):
-    """Pause an active upload"""
+async def pause_upload(session_id: str = Body(...,embed=True)):
+    """Pause an ongoing upload"""
     try:
-        session_id = request.session_id
-        print(f"Attempting to pause session: {session_id}")
-        
-        session = await upload_service.get_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-        
-        if session.status != UploadStatus.UPLOADING:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Cannot pause session with status: {session.status}"
-            )
-        
-        # Update session status
-        session.status = UploadStatus.PAUSED
-        await upload_service._store_session(session)
-        
-        return {
-            "status": "paused",
-            "session": session.dict()
-        }
-        
-    except HTTPException:
-        raise
+        await upload_service.pause_upload(session_id)
+        return {"status": "paused"}
     except Exception as e:
-        print(f"Error pausing upload: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# from http.client import HTTPException
+# from typing import List
+# from fastapi import FastAPI, UploadFile, File, Form, Body
+# import boto3
+# from uuid import uuid4
+# from fastapi.middleware.cors import CORSMiddleware
+# import os
+# from dotenv import load_dotenv
+
+# app = FastAPI()
+
+# # CORS
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=["*"],
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
+
+# load_dotenv()
+
+# # AWS S3 Configuration
+# AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY")
+# AWS_SECRET_KEY = os.getenv("AWS_SECRET_KEY")
+# BUCKET_NAME = os.getenv("BUCKET_NAME")
+# REGION = os.getenv("AWS_REGION")
+
+
+# s3_client = boto3.client("s3", region_name="eu-west-3",
+#                          aws_access_key_id=AWS_ACCESS_KEY,
+#                          aws_secret_access_key=AWS_SECRET_KEY,
+#     config=boto3.session.Config(signature_version='s3v4'))
+
+# @app.post("/upload/initiate")
+# async def initiate_upload(filename: str = Form(...), content_type: str = Form(...)):
+#     key = f"uploads/{uuid4()}_{filename}"
+#     response = s3_client.create_multipart_upload(Bucket=BUCKET_NAME, Key=key,
+#         ContentType=content_type )
+#     return {"uploadId": response["UploadId"], "key": key}
+
+# @app.post("/upload/presigned-url")
+# async def get_presigned_url(key: str = Form(...), uploadId: str = Form(...), partNumber: int = Form(...)):
+#     url = s3_client.generate_presigned_url(
+#         "upload_part",
+#         Params={
+#             "Bucket": BUCKET_NAME,
+#             "Key": key,
+#             "UploadId": uploadId,
+#             "PartNumber": partNumber
+#         },
+#         ExpiresIn=3600,
+#         HttpMethod="PUT"
+#     )
+#     return {"url": url}
+
+# @app.post("/upload/complete")
+# async def complete_upload(
+#     key: str = Body(...),
+#     uploadId: str = Body(...),
+#     parts: List[dict] = Body(...)
+# ):
+#     try:
+#         # Ensure parts are sorted by PartNumber
+#         sorted_parts = sorted(parts, key=lambda x: x['PartNumber'])
+        
+#         response = s3_client.complete_multipart_upload(
+#             Bucket=BUCKET_NAME,
+#             Key=key,
+#             UploadId=uploadId,
+#             MultipartUpload={"Parts": sorted_parts}
+#         )
+#         return {"location": response["Location"]}
+#     except Exception as e:
+#         raise HTTPException(status_code=400, detail=str(e))

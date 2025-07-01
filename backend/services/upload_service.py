@@ -170,51 +170,27 @@ class UploadService:
         await self._store_session(session)
 
     async def resume_upload(self, session_id: str) -> UploadSession:
-        """Resume a paused upload session with enhanced logic"""
+        """Resume a paused upload session"""
         session = await self.get_session(session_id)
         if not session:
-            raise ValueError(f"Session {session_id} not found")
+            raise ValueError("Session not found")
         
-        # Allow resuming both paused and failed sessions
-        if session.status not in [UploadStatus.PAUSED, UploadStatus.FAILED]:
-            raise ValueError(f"Cannot resume session with status: {session.status}")
+        if session.status != UploadStatus.PAUSED:
+            raise ValueError("Session is not paused")
         
-        # Reset error state and update status
         session.status = UploadStatus.UPLOADING
-        session.error = None  # Clear any previous errors
-        session.updated_at = datetime.utcnow()
-        
         await self._store_session(session)
-        print(f"Session {session_id} resumed successfully")
         
         return session
 
     async def get_session(self, session_id: str) -> Optional[UploadSession]:
-        """Get session by ID with enhanced logging"""
-        try:
-            session_key = f"upload_session:{session_id}"
-            print(f"Looking for session key: {session_key}")
-            
-            # Check if Redis is available
-            try:
-                await self.redis_client.ping()
-            except Exception as redis_error:
-                print(f"Redis connection error: {redis_error}")
-                return None
-            
-            session_data = await self.redis_client.get(session_key)
-            if not session_data:
-                print(f"No data found for key: {session_key}")
-                return None
-            
-            data = json.loads(session_data)
-            print(f"Session data retrieved: {data}")
-            return UploadSession(**data)
-            
-        except Exception as e:
-            print(f"Error retrieving session {session_id}: {str(e)}")
+        """Get session by ID"""
+        session_data = self.redis_client.get(f"upload_session:{session_id}")
+        if not session_data:
             return None
-
+        
+        data = json.loads(session_data)
+        return UploadSession(**data)
 
     async def get_active_sessions(self) -> List[UploadSession]:
         """Get all active upload sessions"""
@@ -234,22 +210,24 @@ class UploadService:
 
 
     async def _store_session(self, session: UploadSession):
-        """Store session with TTL and error handling"""
-        try:
-            session_key = f"upload_session:{session.session_id}"
-            
-            # Convert session to dict, handling datetime serialization
-            session_dict = session.dict()
-            for key, value in session_dict.items():
-                if isinstance(value, datetime):
-                    session_dict[key] = value.isoformat()
-            
-            session_data = json.dumps(session_dict)
-            
-            # Set with 24-hour TTL
-            await self.redis_client.setex(session_key, 86400, session_data)
-            print(f"Session stored: {session_key}")
-            
-        except Exception as e:
-            print(f"Error storing session {session.session_id}: {str(e)}")
-            raise
+            """Store session in Redis"""
+            try: 
+                # Get dictionary representation instead of JSON string
+                session_data = session.model_dump()
+                
+                # Convert datetime objects to ISO format strings
+                for key, value in session_data.items():
+                    if isinstance(value, datetime):
+                        session_data[key] = value.isoformat()
+                
+                # Convert to JSON string for storage
+                session_json = json.dumps(session_data)
+                
+                self.redis_client.setex(
+                    f"upload_session:{session.id}",
+                    int(self.session_ttl.total_seconds()),
+                    session_json
+                )
+            except Exception as e:
+                print(f"Failed to store session: {str(e)}")
+                raise 
