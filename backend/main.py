@@ -166,17 +166,57 @@ async def get_active_sessions():
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
 @app.post("/upload/resume")
-async def resume_upload(session_id: str = Body(...,embed=True)):
-    """Resume a paused upload"""
+async def resume_upload(session_id: str = Body(..., embed=True)):
+    """Resume a paused upload with enhanced error handling"""
     try:
+        # Add detailed logging
+        print(f"Attempting to resume session: {session_id}")
+        
+        # Get session with detailed error info
+        session = await upload_service.get_session(session_id)
+        if not session:
+            print(f"Session not found in Redis: {session_id}")
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Session {session_id} not found or expired"
+            )
+        
+        print(f"Session found with status: {session.status}")
+        
+        # More flexible resume conditions
+        if session.status not in [UploadStatus.PAUSED, UploadStatus.FAILED]:
+            if session.status == UploadStatus.COMPLETED:
+                return {
+                    "status": "already_completed",
+                    "session": session.dict()
+                }
+            elif session.status == UploadStatus.UPLOADING:
+                return {
+                    "status": "already_uploading", 
+                    "session": session.dict()
+                }
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot resume session with status: {session.status}"
+                )
+        
+        # Resume the upload
         session = await upload_service.resume_upload(session_id)
         return {
             "status": "resumed",
-            "session": session
+            "session": session.dict()
         }
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        print(f"Unexpected error resuming upload: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
 
 @app.post("/upload/pause")
 async def pause_upload(session_id: str = Body(...,embed=True)):
