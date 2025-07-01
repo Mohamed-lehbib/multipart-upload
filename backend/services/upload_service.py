@@ -169,19 +169,35 @@ class UploadService:
         session.status = UploadStatus.PAUSED
         await self._store_session(session)
 
-    async def resume_upload(self, session_id: str) -> UploadSession:
-        """Resume a paused upload session"""
-        session = await self.get_session(session_id)
-        if not session:
-            raise ValueError("Session not found")
+async def resume_upload(self, session_id: str) -> UploadSession:
+    """Resume a paused upload session with validation"""
+    session = await self.get_session(session_id)
+    if not session:
+        raise ValueError("Session not found")
+    
+    # Check session expiration
+    if session.expires_at < datetime.now():
+        raise ValueError("Session has expired")
+    
+    # Validate S3 upload still exists
+    try:
+        uploads = self.s3_client.list_multipart_uploads(
+            Bucket=self.bucket_name,
+            Prefix=session.s3_key
+        ).get('Uploads', [])
         
-        if session.status != UploadStatus.PAUSED:
-            raise ValueError("Session is not paused")
-        
-        session.status = UploadStatus.UPLOADING
-        await self._store_session(session)
-        
-        return session
+        if not any(u['UploadId'] == session.upload_id for u in uploads):
+            raise ValueError("S3 upload no longer exists")
+    except Exception as e:
+        raise ValueError(f"S3 validation failed: {str(e)}")
+    
+    if session.status != UploadStatus.PAUSED:
+        raise ValueError(f"Cannot resume session in {session.status} state")
+    
+    session.status = UploadStatus.UPLOADING
+    await self._store_session(session)
+    
+    return session
 
     async def get_session(self, session_id: str) -> Optional[UploadSession]:
         """Get session by ID"""

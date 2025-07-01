@@ -1,3 +1,4 @@
+import math
 from fastapi import FastAPI, HTTPException, Form, Body, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
@@ -167,17 +168,95 @@ async def get_active_sessions():
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/upload/resume")
-async def resume_upload(session_id: str = Body(...,embed=True)):
+async def resume_upload(session_id: str = Body(..., embed=True)):
     """Resume a paused upload"""
     try:
+        # First validate the session exists
+        session = await upload_service.get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+            
+        # Then check if it's in a resumable state
+        if session.status != UploadStatus.PAUSED:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Cannot resume session in {session.status} state"
+            )
+            
+        # Then attempt to resume
         session = await upload_service.resume_upload(session_id)
         return {
             "status": "resumed",
             "session": session
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
+@app.post("/upload/validate")
+async def validate_session(session_id: str = Body(..., embed=True)):
+    """Validate if a session can be resumed"""
+    try:
+        session = await upload_service.get_session(session_id)
+        if not session:
+            return {
+                "valid": False,
+                "reason": "Session not found",
+                "can_recover": False
+            }
+
+        # Check session expiration
+        if session.expires_at < datetime.now():
+            return {
+                "valid": False,
+                "reason": "Session expired",
+                "can_recover": False
+            }
+
+        # Check S3 upload still exists
+        try:
+            uploads = upload_service.s3_client.list_multipart_uploads(
+                Bucket=upload_service.bucket_name,
+                Prefix=session.s3_key
+            ).get('Uploads', [])
+            
+            if not any(u['UploadId'] == session.upload_id for u in uploads):
+                return {
+                    "valid": False,
+                    "reason": "S3 upload no longer exists",
+                    "can_recover": False
+                }
+        except Exception as e:
+            return {
+                "valid": False,
+                "reason": f"S3 validation failed: {str(e)}",
+                "can_recover": True
+            }
+
+        # Determine which parts need to be uploaded
+        uploaded_parts = {part['PartNumber'] for part in session.uploaded_parts}
+        total_parts = math.ceil(session.file_size / session.chunk_size)
+        missing_parts = [
+            p for p in range(1, total_parts + 1)
+            if p not in uploaded_parts
+        ]
+
+        return {
+            "valid": True,
+            "status": session.status.value,
+            "missing_parts": missing_parts,
+            "uploaded_bytes": sum(p['Size'] for p in session.uploaded_parts),
+            "total_bytes": session.file_size
+        }
+    except Exception as e:
+        return {
+            "valid": False,
+            "reason": str(e),
+            "can_recover": True
+        }
+    
 @app.post("/upload/pause")
 async def pause_upload(session_id: str = Body(...,embed=True)):
     """Pause an ongoing upload"""
