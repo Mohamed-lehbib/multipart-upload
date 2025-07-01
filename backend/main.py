@@ -1,162 +1,264 @@
-# services/cleanup_service.py
-import asyncio
+from fastapi import FastAPI, HTTPException, Form, Body, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from typing import List, Optional
 import boto3
 import redis
 import json
-import os
 from datetime import datetime, timedelta
-from typing import List
-import logging
+from uuid import uuid4
+import os
+from dotenv import load_dotenv
+import asyncio
+from contextlib import asynccontextmanager
 
-logger = logging.getLogger(__name__)
+from models.upload_models import *
+from services.upload_service import UploadService
+from services.cleanup_service import CleanupService
 
-class CleanupService:
-    def __init__(self):
-        self.s3_client = boto3.client(
-            "s3",
-            region_name= "eu-west-3",
-            aws_access_key_id=os.getenv("AWS_ACCESS_KEY"),
-            aws_secret_access_key=os.getenv("AWS_SECRET_KEY")
+load_dotenv()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    cleanup_service = CleanupService()
+    cleanup_task = asyncio.create_task(cleanup_service.start_cleanup_scheduler())
+    
+    yield
+    
+    # Shutdown
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
+
+app = FastAPI(title="Large File Upload Service", lifespan=lifespan)
+
+# CORS Configuration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Initialize services
+upload_service = UploadService()
+
+@app.post("/upload/initiate")
+async def initiate_upload(
+    filename: str = Form(...),
+    file_size: int = Form(...),
+    content_type: str = Form(...),
+    chunk_size: int = Form(10 * 1024 * 1024)
+):
+    """Initialize a new multipart upload session"""
+    try:
+        file_size = int(file_size)
+        chunk_size = int(chunk_size)
+        session_data = UploadSessionCreate(
+            filename=filename,
+            file_size=file_size,
+            content_type=content_type,
+            chunk_size=chunk_size
         )
         
-        self.bucket_name = os.getenv("BUCKET_NAME")
+        session = await upload_service.create_session(session_data)
+        return {
+            "session_id": session.id,
+            "uploadId": session.upload_id,
+            "key": session.s3_key,
+            "chunk_size": session.chunk_size,
+            "expires_at": session.expires_at.isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/upload/presigned-url")
+async def get_presigned_url(
+    session_id: str = Form(...),
+    part_number: int = Form(...)
+):
+    """Generate presigned URL for uploading a specific part"""
+    try:
+        print(f"\n=== Presigned URL Request ===")
+        print(f"Session ID: {session_id}")
+        print(f"Part Number: {part_number}")
         
-        self.redis_client = redis.Redis(
-            host="redis",
-            port=6379,
-            password=os.getenv("REDIS_PASSWORD", ""), 
-            decode_responses=False,  # Keep as False for binary data safety
-            socket_connect_timeout=5,  # Add timeout
-            health_check_interval=30 , # Enable health checks
-            db=0
+        session_data = await upload_service.get_session(session_id)
+        print(f"Session from Redis: {session_data}")
+        
+        if not session_data:
+            raise HTTPException(status_code=404, detail="Session not found in Redis")
+        
+        # Pass the session object instead of session_id
+        url = upload_service.generate_presigned_url(session_data, part_number)
+        return {"url": url}
+    except Exception as e:
+        print(f"!!! Presigned URL Error: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/upload/part-complete")
+async def mark_part_complete(
+    session_id: str = Form(...),
+    part_number: int = Form(...),
+    etag: str = Form(...),
+    size: int = Form(...),
+    checksum: Optional[str] = Form(None)
+):
+    """Mark a part as successfully uploaded"""
+    try:
+        part = PartUpload(
+            part_number=part_number,
+            etag=etag,
+            size=size,
+            checksum=checksum
         )
         
-        
+        await upload_service.mark_part_complete(session_id, part)
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-    async def start_cleanup_scheduler(self):
-        """Start the cleanup scheduler"""
-        while True:
-            try:
-                await self.cleanup_expired_sessions()
-                await self.cleanup_incomplete_uploads()
-                
-                # Run cleanup every 6 hours
-                await asyncio.sleep(6 * 60 * 60)
-                
-            except asyncio.CancelledError:
-                logger.info("Cleanup scheduler cancelled")
-                break
-            except Exception as e:
-                logger.error(f"Error in cleanup scheduler: {e}")
-                await asyncio.sleep(60)  # Wait 1 minute before retrying
+@app.post("/upload/complete")
+async def complete_upload(
+    session_id: str = Body(...),
+    parts: List[dict] = Body(...)
+):
+    """Complete the multipart upload"""
+    try:
+        result = await upload_service.complete_upload(session_id, parts)
+        return {
+            "status": "completed",
+            "location": result.get("location"),
+            "etag": result.get("etag")
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-    async def cleanup_expired_sessions(self):
-        """Clean up expired or orphaned sessions"""
-        try:
-            pattern = "upload_session:*"
-            
-            # Check Redis connection first
-            try:
-                await self.redis_client.ping()
-            except Exception as redis_error:
-                print(f"Redis unavailable for cleanup: {redis_error}")
-                return
-            
-            keys = await self.redis_client.keys(pattern)
-            print(f"Found {len(keys)} sessions to check for cleanup")
-            
-            cleaned_count = 0
-            for key in keys:
-                try:
-                    session_data = await self.redis_client.get(key)
-                    if not session_data:
-                        continue
-                        
-                    data = json.loads(session_data)
-                    
-                    # Parse created_at timestamp
-                    created_at_str = data.get('created_at')
-                    if created_at_str:
-                        if isinstance(created_at_str, str):
-                            created_at = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
-                        else:
-                            created_at = datetime.fromtimestamp(created_at_str)
-                        
-                        # Only clean up sessions that are:
-                        # 1. Older than 7 days (increased from 24 hours)
-                        # 2. AND completed, cancelled, or failed
-                        age_hours = (datetime.utcnow() - created_at).total_seconds() / 3600
-                        session_status = data.get('status', '').lower()
-                        
-                        should_cleanup = False
-                        
-                        if age_hours > 7 * 24:  # 7 days
-                            # Always cleanup very old sessions regardless of status
-                            should_cleanup = True
-                            print(f"Cleaning up very old session: {key} (age: {age_hours/24:.1f} days)")
-                        elif age_hours > 48:  # 2 days
-                            # Clean up completed, cancelled, or failed sessions after 2 days
-                            if session_status in ['completed', 'cancelled', 'failed']:
-                                should_cleanup = True
-                                print(f"Cleaning up finished session: {key} (status: {session_status}, age: {age_hours:.1f}h)")
-                        
-                        if should_cleanup:
-                            await self.redis_client.delete(key)
-                            cleaned_count += 1
-                            
-                except Exception as e:
-                    print(f"Error processing session {key}: {str(e)}")
-                    # Only delete corrupted session data if it's very old or unreadable
-                    try:
-                        # Try to get the TTL to see if it's a very old key
-                        ttl = await self.redis_client.ttl(key)
-                        if ttl == -1:  # No expiration set, likely corrupted
-                            await self.redis_client.delete(key)
-                            cleaned_count += 1
-                            print(f"Deleted corrupted session (no TTL): {key}")
-                        elif ttl < 3600:  # Less than 1 hour remaining
-                            await self.redis_client.delete(key)
-                            cleaned_count += 1
-                            print(f"Deleted corrupted session (expiring soon): {key}")
-                    except Exception as delete_error:
-                        print(f"Failed to delete corrupted session: {delete_error}")
-            
-            print(f"Session cleanup completed. Cleaned {cleaned_count} sessions")
-                    
-        except Exception as e:
-            print(f"Error during session cleanup: {str(e)}")
-            
-    async def cleanup_incomplete_uploads(self):
-        """Clean up incomplete multipart uploads directly from S3"""
-        logger.info("Starting S3 incomplete uploads cleanup")
+@app.post("/upload/abort")
+async def abort_upload(session_id: str = Body(...,embed=True)):
+    """Abort an ongoing upload"""
+    try:
+        await upload_service.abort_upload(session_id)
+        return {"status": "aborted"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/upload/session/{session_id}")
+async def get_session(session_id: str):
+    """Get upload session details"""
+    try:
+        session = await upload_service.get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return session
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/upload/sessions/active")
+async def get_active_sessions():
+    """Get all active upload sessions"""
+    try:
+        sessions = await upload_service.get_active_sessions()
+        return {"sessions": sessions}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/upload/resume")
+async def resume_upload(session_id: str = Body(...,embed=True)):
+    """Resume a paused upload"""
+    try:
+        session = await upload_service.resume_upload(session_id)
+        return {
+            "status": "resumed",
+            "session": session
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/upload/pause")
+async def pause_upload(session_id: str = Body(...,embed=True)):
+    """Pause an ongoing upload"""
+    try:
+        await upload_service.pause_upload(session_id)
+        return {"status": "paused"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# from http.client import HTTPException
+# from typing import List
+# from fastapi import FastAPI, UploadFile, File, Form, Body
+# import boto3
+# from uuid import uuid4
+# from fastapi.middleware.cors import CORSMiddleware
+# import os
+# from dotenv import load_dotenv
+
+# app = FastAPI()
+
+# # CORS
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=["*"],
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
+
+# load_dotenv()
+
+# # AWS S3 Configuration
+# AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY")
+# AWS_SECRET_KEY = os.getenv("AWS_SECRET_KEY")
+# BUCKET_NAME = os.getenv("BUCKET_NAME")
+# REGION = os.getenv("AWS_REGION")
+
+
+# s3_client = boto3.client("s3", region_name="eu-west-3",
+#                          aws_access_key_id=AWS_ACCESS_KEY,
+#                          aws_secret_access_key=AWS_SECRET_KEY,
+#     config=boto3.session.Config(signature_version='s3v4'))
+
+# @app.post("/upload/initiate")
+# async def initiate_upload(filename: str = Form(...), content_type: str = Form(...)):
+#     key = f"uploads/{uuid4()}_{filename}"
+#     response = s3_client.create_multipart_upload(Bucket=BUCKET_NAME, Key=key,
+#         ContentType=content_type )
+#     return {"uploadId": response["UploadId"], "key": key}
+
+# @app.post("/upload/presigned-url")
+# async def get_presigned_url(key: str = Form(...), uploadId: str = Form(...), partNumber: int = Form(...)):
+#     url = s3_client.generate_presigned_url(
+#         "upload_part",
+#         Params={
+#             "Bucket": BUCKET_NAME,
+#             "Key": key,
+#             "UploadId": uploadId,
+#             "PartNumber": partNumber
+#         },
+#         ExpiresIn=3600,
+#         HttpMethod="PUT"
+#     )
+#     return {"url": url}
+
+# @app.post("/upload/complete")
+# async def complete_upload(
+#     key: str = Body(...),
+#     uploadId: str = Body(...),
+#     parts: List[dict] = Body(...)
+# ):
+#     try:
+#         # Ensure parts are sorted by PartNumber
+#         sorted_parts = sorted(parts, key=lambda x: x['PartNumber'])
         
-        try:
-            # List incomplete multipart uploads older than 7 days
-            cutoff_date = datetime.now() - timedelta(days=7)
-            
-            response = self.s3_client.list_multipart_uploads(
-                Bucket=self.bucket_name,
-                Prefix="uploads/"
-            )
-            
-            uploads = response.get("Uploads", [])
-            cleanup_count = 0
-            
-            for upload in uploads:
-                if upload["Initiated"] < cutoff_date:
-                    try:
-                        self.s3_client.abort_multipart_upload(
-                            Bucket=self.bucket_name,
-                            Key=upload["Key"],
-                            UploadId=upload["UploadId"]
-                        )
-                        cleanup_count += 1
-                        logger.info(f"Aborted stale upload: {upload['Key']}")
-                        
-                    except Exception as e:
-                        logger.error(f"Failed to abort upload {upload['UploadId']}: {e}")
-            
-            logger.info(f"Cleaned up {cleanup_count} incomplete S3 uploads")
-            
-        except Exception as e:
-            logger.error(f"Error during S3 cleanup: {e}")
+#         response = s3_client.complete_multipart_upload(
+#             Bucket=BUCKET_NAME,
+#             Key=key,
+#             UploadId=uploadId,
+#             MultipartUpload={"Parts": sorted_parts}
+#         )
+#         return {"location": response["Location"]}
+#     except Exception as e:
+#         raise HTTPException(status_code=400, detail=str(e))

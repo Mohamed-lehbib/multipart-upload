@@ -82,20 +82,42 @@ class CleanupService:
                         else:
                             created_at = datetime.fromtimestamp(created_at_str)
                         
-                        # Check if session is too old (older than 24 hours)
+                        # Only clean up sessions that are:
+                        # 1. Older than 7 days (increased from 24 hours)
+                        # 2. AND completed, cancelled, or failed
                         age_hours = (datetime.utcnow() - created_at).total_seconds() / 3600
-                        if age_hours > 24:
+                        session_status = data.get('status', '').lower()
+                        
+                        should_cleanup = False
+                        
+                        if age_hours > 7 * 24:  # 7 days
+                            # Always cleanup very old sessions regardless of status
+                            should_cleanup = True
+                            print(f"Cleaning up very old session: {key} (age: {age_hours/24:.1f} days)")
+                        elif age_hours > 48:  # 2 days
+                            # Clean up completed, cancelled, or failed sessions after 2 days
+                            if session_status in ['completed', 'cancelled', 'failed']:
+                                should_cleanup = True
+                                print(f"Cleaning up finished session: {key} (status: {session_status}, age: {age_hours:.1f}h)")
+                        
+                        if should_cleanup:
                             await self.redis_client.delete(key)
                             cleaned_count += 1
-                            print(f"Cleaned up expired session: {key} (age: {age_hours:.1f}h)")
                             
                 except Exception as e:
                     print(f"Error processing session {key}: {str(e)}")
-                    # Delete corrupted session data
+                    # Only delete corrupted session data if it's very old or unreadable
                     try:
-                        await self.redis_client.delete(key)
-                        cleaned_count += 1
-                        print(f"Deleted corrupted session: {key}")
+                        # Try to get the TTL to see if it's a very old key
+                        ttl = await self.redis_client.ttl(key)
+                        if ttl == -1:  # No expiration set, likely corrupted
+                            await self.redis_client.delete(key)
+                            cleaned_count += 1
+                            print(f"Deleted corrupted session (no TTL): {key}")
+                        elif ttl < 3600:  # Less than 1 hour remaining
+                            await self.redis_client.delete(key)
+                            cleaned_count += 1
+                            print(f"Deleted corrupted session (expiring soon): {key}")
                     except Exception as delete_error:
                         print(f"Failed to delete corrupted session: {delete_error}")
             
@@ -103,6 +125,7 @@ class CleanupService:
                     
         except Exception as e:
             print(f"Error during session cleanup: {str(e)}")
+            
     async def cleanup_incomplete_uploads(self):
         """Clean up incomplete multipart uploads directly from S3"""
         logger.info("Starting S3 incomplete uploads cleanup")
