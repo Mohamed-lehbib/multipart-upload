@@ -51,42 +51,58 @@ class CleanupService:
                 await asyncio.sleep(60)  # Wait 1 minute before retrying
 
     async def cleanup_expired_sessions(self):
-        """Clean up expired upload sessions"""
-        logger.info("Starting expired sessions cleanup")
-        
-        pattern = "upload_session:*"
-        keys = self.redis_client.keys(pattern)
-        
-        expired_count = 0
-        for key in keys:
+        """Clean up expired or orphaned sessions"""
+        try:
+            pattern = "upload_session:*"
+            
+            # Check Redis connection first
             try:
-                session_data = self.redis_client.get(key)
-                if not session_data:
-                    continue
-                
-                data = json.loads(session_data)
-                expires_at = datetime.fromisoformat(data.get("expires_at", ""))
-                
-                if datetime.now() > expires_at:
-                    # Abort the multipart upload
+                await self.redis_client.ping()
+            except Exception as redis_error:
+                print(f"Redis unavailable for cleanup: {redis_error}")
+                return
+            
+            keys = await self.redis_client.keys(pattern)
+            print(f"Found {len(keys)} sessions to check for cleanup")
+            
+            cleaned_count = 0
+            for key in keys:
+                try:
+                    session_data = await self.redis_client.get(key)
+                    if not session_data:
+                        continue
+                        
+                    data = json.loads(session_data)
+                    
+                    # Parse created_at timestamp
+                    created_at_str = data.get('created_at')
+                    if created_at_str:
+                        if isinstance(created_at_str, str):
+                            created_at = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+                        else:
+                            created_at = datetime.fromtimestamp(created_at_str)
+                        
+                        # Check if session is too old (older than 24 hours)
+                        age_hours = (datetime.utcnow() - created_at).total_seconds() / 3600
+                        if age_hours > 24:
+                            await self.redis_client.delete(key)
+                            cleaned_count += 1
+                            print(f"Cleaned up expired session: {key} (age: {age_hours:.1f}h)")
+                            
+                except Exception as e:
+                    print(f"Error processing session {key}: {str(e)}")
+                    # Delete corrupted session data
                     try:
-                        self.s3_client.abort_multipart_upload(
-                            Bucket=self.bucket_name,
-                            Key=data["s3_key"],
-                            UploadId=data["upload_id"]
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to abort S3 upload {data['upload_id']}: {e}")
+                        await self.redis_client.delete(key)
+                        cleaned_count += 1
+                        print(f"Deleted corrupted session: {key}")
+                    except Exception as delete_error:
+                        print(f"Failed to delete corrupted session: {delete_error}")
+            
+            print(f"Session cleanup completed. Cleaned {cleaned_count} sessions")
                     
-                    # Remove session from Redis
-                    self.redis_client.delete(key)
-                    expired_count += 1
-                    
-            except Exception as e:
-                logger.error(f"Error processing session {key}: {e}")
-        
-        logger.info(f"Cleaned up {expired_count} expired sessions")
-
+        except Exception as e:
+            print(f"Error during session cleanup: {str(e)}")
     async def cleanup_incomplete_uploads(self):
         """Clean up incomplete multipart uploads directly from S3"""
         logger.info("Starting S3 incomplete uploads cleanup")

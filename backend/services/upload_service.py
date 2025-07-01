@@ -195,6 +195,13 @@ class UploadService:
             session_key = f"upload_session:{session_id}"
             print(f"Looking for session key: {session_key}")
             
+            # Check if Redis is available
+            try:
+                await self.redis_client.ping()
+            except Exception as redis_error:
+                print(f"Redis connection error: {redis_error}")
+                return None
+            
             session_data = await self.redis_client.get(session_key)
             if not session_data:
                 print(f"No data found for key: {session_key}")
@@ -207,6 +214,7 @@ class UploadService:
         except Exception as e:
             print(f"Error retrieving session {session_id}: {str(e)}")
             return None
+
 
     async def get_active_sessions(self) -> List[UploadSession]:
         """Get all active upload sessions"""
@@ -229,7 +237,14 @@ class UploadService:
         """Store session with TTL and error handling"""
         try:
             session_key = f"upload_session:{session.session_id}"
-            session_data = json.dumps(session.dict(), default=str)
+            
+            # Convert session to dict, handling datetime serialization
+            session_dict = session.dict()
+            for key, value in session_dict.items():
+                if isinstance(value, datetime):
+                    session_dict[key] = value.isoformat()
+            
+            session_data = json.dumps(session_dict)
             
             # Set with 24-hour TTL
             await self.redis_client.setex(session_key, 86400, session_data)
