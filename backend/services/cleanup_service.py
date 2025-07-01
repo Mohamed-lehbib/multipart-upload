@@ -57,18 +57,18 @@ class CleanupService:
             
             # Check Redis connection first
             try:
-                await self.redis_client.ping()
+                self.redis_client.ping()  # Remove await - ping() is synchronous
             except Exception as redis_error:
                 print(f"Redis unavailable for cleanup: {redis_error}")
                 return
             
-            keys = await self.redis_client.keys(pattern)
+            keys = self.redis_client.keys(pattern)  # Remove await - keys() is synchronous
             print(f"Found {len(keys)} sessions to check for cleanup")
             
             cleaned_count = 0
             for key in keys:
                 try:
-                    session_data = await self.redis_client.get(key)
+                    session_data = self.redis_client.get(key)  # Remove await
                     if not session_data:
                         continue
                         
@@ -81,6 +81,12 @@ class CleanupService:
                             created_at = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
                         else:
                             created_at = datetime.fromtimestamp(created_at_str)
+                        
+                        # Convert to UTC for comparison
+                        if created_at.tzinfo is None:
+                            created_at = created_at.replace(tzinfo=None)
+                        else:
+                            created_at = created_at.replace(tzinfo=None)
                         
                         # Only clean up sessions that are:
                         # 1. Older than 7 days (increased from 24 hours)
@@ -101,7 +107,7 @@ class CleanupService:
                                 print(f"Cleaning up finished session: {key} (status: {session_status}, age: {age_hours:.1f}h)")
                         
                         if should_cleanup:
-                            await self.redis_client.delete(key)
+                            self.redis_client.delete(key)  # Remove await
                             cleaned_count += 1
                             
                 except Exception as e:
@@ -109,13 +115,13 @@ class CleanupService:
                     # Only delete corrupted session data if it's very old or unreadable
                     try:
                         # Try to get the TTL to see if it's a very old key
-                        ttl = await self.redis_client.ttl(key)
+                        ttl = self.redis_client.ttl(key)  # Remove await
                         if ttl == -1:  # No expiration set, likely corrupted
-                            await self.redis_client.delete(key)
+                            self.redis_client.delete(key)  # Remove await
                             cleaned_count += 1
                             print(f"Deleted corrupted session (no TTL): {key}")
                         elif ttl < 3600:  # Less than 1 hour remaining
-                            await self.redis_client.delete(key)
+                            self.redis_client.delete(key)  # Remove await
                             cleaned_count += 1
                             print(f"Deleted corrupted session (expiring soon): {key}")
                     except Exception as delete_error:
@@ -132,7 +138,8 @@ class CleanupService:
         
         try:
             # List incomplete multipart uploads older than 7 days
-            cutoff_date = datetime.now() - timedelta(days=7)
+            cutoff_date = datetime.now().replace(tzinfo=None)  # Make timezone naive
+            cutoff_date = cutoff_date - timedelta(days=7)
             
             response = self.s3_client.list_multipart_uploads(
                 Bucket=self.bucket_name,
@@ -143,7 +150,12 @@ class CleanupService:
             cleanup_count = 0
             
             for upload in uploads:
-                if upload["Initiated"] < cutoff_date:
+                # Convert S3 datetime to naive datetime for comparison
+                initiated_date = upload["Initiated"]
+                if hasattr(initiated_date, 'tzinfo') and initiated_date.tzinfo is not None:
+                    initiated_date = initiated_date.replace(tzinfo=None)
+                
+                if initiated_date < cutoff_date:
                     try:
                         self.s3_client.abort_multipart_upload(
                             Bucket=self.bucket_name,
